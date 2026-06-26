@@ -1,0 +1,71 @@
+trigger:
+  - main
+
+variables:
+  buildConfiguration: Release
+  resourceGroupName: rg-bff-webapp-westeurope
+  location: westeurope
+  appServicePlanName: plan-bff-webapp
+  webAppName: bff-webapp
+  azureServiceConnection: $(azureServiceConnection)
+
+pool:
+  vmImage: ubuntu-latest
+
+stages:
+- stage: Build
+  jobs:
+  - job: BuildAndPublish
+    steps:
+    - task: UseDotNet@2
+      displayName: Use .NET 8 SDK
+      inputs:
+        packageType: sdk
+        version: '8.0.x'
+
+    - script: dotnet restore
+      displayName: Restore packages
+
+    - script: dotnet build --configuration $(buildConfiguration) --no-restore
+      displayName: Build app
+
+    - script: dotnet publish ./BffApi.csproj -c $(buildConfiguration) -o $(Build.ArtifactStagingDirectory)/publish
+      displayName: Publish app
+
+    - task: ArchiveFiles@2
+      displayName: Zip published app
+      inputs:
+        rootFolderOrFile: '$(Build.ArtifactStagingDirectory)/publish'
+        includeRootFolder: false
+        archiveType: zip
+        archiveFile: '$(Build.ArtifactStagingDirectory)/app.zip'
+        replaceExistingArchive: true
+
+    - publish: $(Build.ArtifactStagingDirectory)/app.zip
+      artifact: appdrop
+
+- stage: Deploy
+  dependsOn: Build
+  condition: succeeded()
+  jobs:
+  - deployment: DeployToAzure
+    environment: production
+    strategy:
+      runOnce:
+        deploy:
+          steps:
+          - download: current
+            artifact: appdrop
+
+          - task: AzureCLI@2
+            displayName: Create infrastructure and deploy app
+            inputs:
+              azureSubscription: '$(azureServiceConnection)'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -euo pipefail
+                az group create --name $(resourceGroupName) --location $(location)
+                az appservice plan create --name $(appServicePlanName) --resource-group $(resourceGroupName) --sku B1 --is-linux
+                az webapp create --resource-group $(resourceGroupName) --plan $(appServicePlanName) --name $(webAppName)
+                az webapp deploy --resource-group $(resourceGroupName) --name $(webAppName) --src-path $(Pipeline.Workspace)/appdrop/app.zip --type zip --restart true

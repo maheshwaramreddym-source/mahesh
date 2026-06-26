@@ -1,0 +1,6 @@
+resourcegroup
+vnet
+subnet
+privateendpoint
+sql
+keyvault
